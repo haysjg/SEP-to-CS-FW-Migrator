@@ -1,6 +1,8 @@
 # SEP → CrowdStrike Firewall Management Migrator
 
-> **Disclaimer:** This project is an independent community tool and is **not an official CrowdStrike product**. It is not supported, endorsed, or maintained by CrowdStrike. Use at your own risk.
+> [!WARNING]
+> This project is an independent community tool and is **not an official CrowdStrike product**.
+> It is not supported, endorsed, or maintained by CrowdStrike. Use at your own risk.
 
 A PowerShell GUI tool to convert **Symantec Endpoint Protection 14** firewall policies (JSON export) into **CrowdStrike Firewall Management** rule groups and policies via the [PSFalcon](https://github.com/CrowdStrike/psfalcon) module.
 
