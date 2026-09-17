@@ -45,11 +45,8 @@ Create a **CrowdStrike API client** with the following scopes:
 
 ## Getting Started
 
-### 1. Export your SEP policy
+### 1. Run the migrator
 
-In the SEP console: **Policies → Firewall → Export policy → JSON**. The exported file is named `FW_*.json`.
-
-### 2. Run the migrator
 
 ```powershell
 .\SEP-CS-FW-Migrator.ps1
@@ -58,7 +55,7 @@ In the SEP console: **Policies → Firewall → Export policy → JSON**. The ex
 > First run: click **Install / Update PSFalcon** to pull the module from PSGallery.  
 > If you get an execution policy error: `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`
 
-### 3. Follow the 3-tab workflow
+### 2. Follow the 3-tab workflow
 
 | Tab | Action |
 |---|---|
