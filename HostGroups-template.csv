@@ -1,0 +1,7 @@
+GroupName,Entry
+Bloomberg,10.0.1.0/24
+Bloomberg,10.0.2.0/24
+Country B - VPN Gateway,vpn.example.com
+Country B - Symantec WSS,168.149.181.1-168.149.181.126
+Global - MCP Host Group,*.saasprotection.com
+Global - MCP Host Group,*.symantec.com

@@ -1,0 +1,20 @@
+# ── Saved configurations (may contain API credentials) ──────────────────────
+*-Config.json
+*-Config.xml
+
+# ── Runtime logs ─────────────────────────────────────────────────────────────
+*.log
+
+# ── Migration output reports ──────────────────────────────────────────────────
+SEP-CS-FW-Migration-*.csv
+
+# ── SEP policy exports (customer data) ───────────────────────────────────────
+FW_*.json
+
+# ── Windows / OS artifacts ───────────────────────────────────────────────────
+Thumbs.db
+desktop.ini
+$RECYCLE.BIN/
+
+# ── PowerShell temp ───────────────────────────────────────────────────────────
+*.ps1xml
