@@ -352,6 +352,26 @@ function Test-RulePortsValid {
     return @{ valid = $true; field = ''; issue = '' }
 }
 
+function Test-RuleAddressesValid {
+    param($Rule)
+    $ipv4 = '^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$'
+    foreach ($field in @('local_address', 'remote_address')) {
+        foreach ($a in @($Rule[$field])) {
+            if (-not $a -or $a.address -eq '*' -or [string]::IsNullOrEmpty($a.address)) { continue }
+            $addr = $a.address
+            if ($addr -notmatch $ipv4) {
+                return @{ valid = $false; field = $field; address = $addr; reason = "not a valid IPv4 address" }
+            }
+            foreach ($o in ($addr -split '\.')) {
+                if ([int]$o -gt 255) {
+                    return @{ valid = $false; field = $field; address = $addr; reason = "octet '$o' out of range (0-255)" }
+                }
+            }
+        }
+    }
+    return @{ valid = $true; field = ''; address = ''; reason = '' }
+}
+
 function Get-ConnectionPorts {
     param([string]$RuleName = '', $Connections)
     $local  = [System.Collections.Generic.List[hashtable]]::new()
@@ -906,23 +926,41 @@ function Start-Migration {
 
     Write-UILog $Log "Preparing $($CsRules.Count) CS FW rules..." Info
 
-    # ── Pre-flight port validation ────────────────────────────────────────────────
-    Write-FileLog "--- Pre-flight port dump ($($CsRules.Count) rules) ---" INFO
+    # ── Pre-flight port + address validation ─────────────────────────────────────
+    Write-FileLog "--- Pre-flight dump ($($CsRules.Count) rules) ---" INFO
     $goodRules = [System.Collections.Generic.List[hashtable]]::new()
     $skipCount = 0
     foreach ($r in $CsRules) {
-        $lp = if ($r.local_port  -and @($r.local_port).Count  -gt 0) { ($r.local_port  | ForEach-Object { "$($_.start)-$($_.end)" }) -join ',' } else { 'any' }
-        $rp = if ($r.remote_port -and @($r.remote_port).Count -gt 0) { ($r.remote_port | ForEach-Object { "$($_.start)-$($_.end)" }) -join ',' } else { 'any' }
-        Write-FileLog "  '$($r.name)' proto=$($r.protocol) dir=$($r.direction) addr=$($r.address_family) local_port=[$lp] remote_port=[$rp]" INFO
-        $check = Test-RulePortsValid $r
-        if ($check.valid) {
-            $goodRules.Add($r)
-        } else {
-            $msg = "Port conflict in '$($r.name)' ($($check.field)): $($check.issue)"
+        $lp  = if ($r.local_port  -and @($r.local_port).Count  -gt 0) { ($r.local_port  | ForEach-Object { "$($_.start)-$($_.end)" }) -join ',' } else { 'any' }
+        $rp  = if ($r.remote_port -and @($r.remote_port).Count -gt 0) { ($r.remote_port | ForEach-Object { "$($_.start)-$($_.end)" }) -join ',' } else { 'any' }
+        $la  = if ($r.local_address  -and @($r.local_address).Count  -gt 0) { ($r.local_address  | ForEach-Object { "$($_.address)/$($_.netmask)" }) -join ',' } else { 'any' }
+        $ra  = if ($r.remote_address -and @($r.remote_address).Count -gt 0) { ($r.remote_address | ForEach-Object { "$($_.address)/$($_.netmask)" }) -join ',' } else { 'any' }
+        Write-FileLog "  '$($r.name)' proto=$($r.protocol) dir=$($r.direction) local_addr=[$la] remote_addr=[$ra] local_port=[$lp] remote_port=[$rp]" INFO
+
+        $portCheck = Test-RulePortsValid $r
+        if (-not $portCheck.valid) {
+            $msg = "Port conflict in '$($r.name)' ($($portCheck.field)): $($portCheck.issue)"
             Write-FileLog "  SKIP — $msg" ERROR
             Write-UILog $Log "  Skip: $msg" Warning
             $skipCount++
+            continue
         }
+
+        $addrCheck = Test-RuleAddressesValid $r
+        if (-not $addrCheck.valid) {
+            # Strip protocol/FQDN suffixes to recover the original SEP rule name for the hint
+            $sepName = $r.name -replace '\s*\[(?:TCP|UDP|ICMP|ESP|ANY|\d+|FQDN:[^\]]+)\]\s*$', '' -replace '\.\.\.$', ''
+            $msg  = "Bad address in '$($r.name)' ($($addrCheck.field)): '$($addrCheck.address)' — $($addrCheck.reason)"
+            $hint = "-> In your SEP JSON, search for rule name '$($sepName.Trim())' and inspect its hosts[] entries."
+            Write-FileLog "  SKIP — $msg" ERROR
+            Write-FileLog "  $hint" ERROR
+            Write-UILog $Log "  Skip: $msg" Warning
+            Write-UILog $Log "  $hint" Warning
+            $skipCount++
+            continue
+        }
+
+        $goodRules.Add($r)
     }
     if ($skipCount -gt 0) {
         Write-UILog $Log "  $skipCount rule(s) skipped (port conflicts). $($goodRules.Count) proceeding." Warning
@@ -932,7 +970,7 @@ function Start-Migration {
             return $null
         }
     } else {
-        Write-UILog $Log '  Pre-flight OK — all port ranges valid.' Success
+        Write-UILog $Log '  Pre-flight OK — all port ranges and addresses valid.' Success
     }
 
     # ── Convert single-port ranges to API format ─────────────────────────────────
