@@ -33,7 +33,7 @@ function Write-FileLog {
     Add-Content -Path $script:LogFile -Value $line -Encoding UTF8
 }
 
-$script:MaxRuleNameLen = 64
+$script:MaxRuleNameLen = 65
 
 $script:DirectionMap = @{ 0 = 'OUT'; 1 = 'IN'; 2 = 'BOTH' }
 $script:DirectionLabel = @{ 0 = 'Outbound'; 1 = 'Inbound'; 2 = 'Both' }
