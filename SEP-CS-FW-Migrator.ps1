@@ -372,6 +372,23 @@ function Test-RuleAddressesValid {
     return @{ valid = $true; field = ''; address = ''; reason = '' }
 }
 
+function Test-RuleFqdnValid {
+    param($Rule)
+    if (-not $Rule.fqdn_enabled -or [string]::IsNullOrEmpty($Rule.fqdn)) {
+        return @{ valid = $true; fqdn = ''; reason = '' }
+    }
+    $fqdn = $Rule.fqdn
+    # Wildcard-only is valid; otherwise each label must be [a-zA-Z0-9*] with interior hyphens/digits only
+    if ($fqdn -eq '*') { return @{ valid = $true; fqdn = $fqdn; reason = '' } }
+    $labelOk = '^[a-zA-Z0-9*]([a-zA-Z0-9\-*]*[a-zA-Z0-9*])?$'
+    foreach ($label in ($fqdn -split '\.')) {
+        if ([string]::IsNullOrEmpty($label) -or $label -notmatch $labelOk) {
+            return @{ valid = $false; fqdn = $fqdn; reason = "label '$label' contains invalid characters (underscores and special chars are not allowed)" }
+        }
+    }
+    return @{ valid = $true; fqdn = $fqdn; reason = '' }
+}
+
 function Get-ConnectionPorts {
     param([string]$RuleName = '', $Connections)
     $local  = [System.Collections.Generic.List[hashtable]]::new()
@@ -952,6 +969,16 @@ function Start-Migration {
             Write-FileLog "  $hint" ERROR
             $preflightErrors.Add("$msg`n     $hint")
         }
+
+        $fqdnCheck = Test-RuleFqdnValid $r
+        if (-not $fqdnCheck.valid) {
+            $sepName = $r.name -replace '\s*\[(?:TCP|UDP|ICMP|ESP|ANY|\d+|FQDN:[^\]]+)\]\s*$', '' -replace '\.\.\.$', ''
+            $msg  = "Invalid FQDN in '$($r.name)': '$($fqdnCheck.fqdn)' — $($fqdnCheck.reason)"
+            $hint = "-> Search for rule '$($sepName.Trim())' in your SEP JSON and inspect its hosts[].dns_domain or dns_host entries."
+            Write-FileLog "  ERROR — $msg" ERROR
+            Write-FileLog "  $hint" ERROR
+            $preflightErrors.Add("$msg`n     $hint")
+        }
     }
     if ($preflightErrors.Count -gt 0) {
         Write-UILog $Log "  Pre-flight FAILED — $($preflightErrors.Count) error(s):" Error
@@ -961,7 +988,7 @@ function Start-Migration {
         Write-UILog $Log "  Fix the above in your SEP JSON and re-run Analysis + Migration." Warning
         return $null
     }
-    Write-UILog $Log '  Pre-flight OK — all port ranges and addresses valid.' Success
+    Write-UILog $Log '  Pre-flight OK — all port ranges, addresses and FQDNs valid.' Success
 
     # ── Convert single-port ranges to API format ─────────────────────────────────
     # CS FW API convention: {start=N, end=0} for a single port; {start=N, end=M} for ranges.
