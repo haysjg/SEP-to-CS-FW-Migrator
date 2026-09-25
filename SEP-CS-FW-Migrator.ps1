@@ -943,9 +943,11 @@ function Start-Migration {
 
     Write-UILog $Log "Preparing $($CsRules.Count) CS FW rules..." Info
 
-    # ── Pre-flight port + address validation ─────────────────────────────────────
+    # ── Pre-flight port + address + FQDN validation ──────────────────────────────
     Write-FileLog "--- Pre-flight dump ($($CsRules.Count) rules) ---" INFO
-    $preflightErrors = [System.Collections.Generic.List[string]]::new()
+    $goodRules    = [System.Collections.Generic.List[hashtable]]::new()
+    $skippedRules = [System.Collections.Generic.List[hashtable]]::new()
+
     foreach ($r in $CsRules) {
         $lp  = if ($r.local_port  -and @($r.local_port).Count  -gt 0) { ($r.local_port  | ForEach-Object { "$($_.start)-$($_.end)" }) -join ',' } else { 'any' }
         $rp  = if ($r.remote_port -and @($r.remote_port).Count -gt 0) { ($r.remote_port | ForEach-Object { "$($_.start)-$($_.end)" }) -join ',' } else { 'any' }
@@ -953,42 +955,69 @@ function Start-Migration {
         $ra  = if ($r.remote_address -and @($r.remote_address).Count -gt 0) { ($r.remote_address | ForEach-Object { "$($_.address)/$($_.netmask)" }) -join ',' } else { 'any' }
         Write-FileLog "  '$($r.name)' proto=$($r.protocol) dir=$($r.direction) local_addr=[$la] remote_addr=[$ra] local_port=[$lp] remote_port=[$rp]" INFO
 
+        $ruleErrors = [System.Collections.Generic.List[hashtable]]::new()
+        $sepName    = $r.name -replace '\s*\[(?:TCP|UDP|ICMP|ESP|ANY|\d+|FQDN:[^\]]+)\]\s*$', '' -replace '\.\.\.$', ''
+        $sepName    = $sepName.Trim()
+
         $portCheck = Test-RulePortsValid $r
         if (-not $portCheck.valid) {
-            $msg = "Port conflict in '$($r.name)' ($($portCheck.field)): $($portCheck.issue)"
-            Write-FileLog "  ERROR — $msg" ERROR
-            $preflightErrors.Add($msg)
+            $ruleErrors.Add(@{
+                Type   = 'Port Conflict'
+                Detail = "($($portCheck.field)): $($portCheck.issue)"
+                Hint   = "Check port entries in the connections[] of rule '$sepName' in your SEP JSON."
+            })
         }
 
         $addrCheck = Test-RuleAddressesValid $r
         if (-not $addrCheck.valid) {
-            $sepName = $r.name -replace '\s*\[(?:TCP|UDP|ICMP|ESP|ANY|\d+|FQDN:[^\]]+)\]\s*$', '' -replace '\.\.\.$', ''
-            $msg  = "Bad address in '$($r.name)' ($($addrCheck.field)): '$($addrCheck.address)' — $($addrCheck.reason)"
-            $hint = "-> Search for rule '$($sepName.Trim())' in your SEP JSON and inspect its hosts[] entries."
-            Write-FileLog "  ERROR — $msg" ERROR
-            Write-FileLog "  $hint" ERROR
-            $preflightErrors.Add("$msg`n     $hint")
+            $ruleErrors.Add(@{
+                Type   = 'Bad Address'
+                Detail = "($($addrCheck.field)): '$($addrCheck.address)' — $($addrCheck.reason)"
+                Hint   = "Search for rule '$sepName' in your SEP JSON and inspect its hosts[] entries."
+            })
         }
 
         $fqdnCheck = Test-RuleFqdnValid $r
         if (-not $fqdnCheck.valid) {
-            $sepName = $r.name -replace '\s*\[(?:TCP|UDP|ICMP|ESP|ANY|\d+|FQDN:[^\]]+)\]\s*$', '' -replace '\.\.\.$', ''
-            $msg  = "Invalid FQDN in '$($r.name)': '$($fqdnCheck.fqdn)' — $($fqdnCheck.reason)"
-            $hint = "-> Search for rule '$($sepName.Trim())' in your SEP JSON and inspect its hosts[].dns_domain or dns_host entries."
-            Write-FileLog "  ERROR — $msg" ERROR
-            Write-FileLog "  $hint" ERROR
-            $preflightErrors.Add("$msg`n     $hint")
+            $ruleErrors.Add(@{
+                Type   = 'Invalid FQDN'
+                Detail = "'$($fqdnCheck.fqdn)' — $($fqdnCheck.reason)"
+                Hint   = "Search for rule '$sepName' in your SEP JSON and inspect its hosts[].dns_domain or dns_host entries."
+            })
+        }
+
+        if ($ruleErrors.Count -gt 0) {
+            foreach ($e in $ruleErrors) {
+                Write-FileLog "  SKIP ($($e.Type)) — $($e.Detail)" ERROR
+                $skippedRules.Add(@{
+                    CsRuleName = $r.name
+                    SepRuleName = $sepName
+                    ErrorType  = $e.Type
+                    ErrorDetail = $e.Detail
+                    Hint       = $e.Hint
+                })
+            }
+        } else {
+            $goodRules.Add($r)
         }
     }
-    if ($preflightErrors.Count -gt 0) {
-        Write-UILog $Log "  Pre-flight FAILED — $($preflightErrors.Count) error(s):" Error
-        foreach ($e in $preflightErrors) {
-            Write-UILog $Log "  x $e" Error
+
+    # ── Show all errors upfront, then continue with valid rules ──────────────────
+    if ($skippedRules.Count -gt 0) {
+        Write-UILog $Log "  Pre-flight: $($skippedRules.Count) rule(s) skipped, $($goodRules.Count) valid — errors:" Warning
+        foreach ($s in $skippedRules) {
+            Write-UILog $Log "  ! [$($s.ErrorType)] '$($s.CsRuleName)': $($s.ErrorDetail)" Warning
+            Write-UILog $Log "    -> $($s.Hint)" Warning
         }
-        Write-UILog $Log "  Fix the above in your SEP JSON and re-run Analysis + Migration." Warning
-        return $null
+        Write-UILog $Log "  Proceeding with $($goodRules.Count) valid rule(s). A CSV report will be saved at the end." Warning
+        $CsRules = $goodRules.ToArray()
+        if ($CsRules.Count -eq 0) {
+            Write-UILog $Log 'No valid rules remaining after pre-flight.' Error
+            return $null
+        }
+    } else {
+        Write-UILog $Log '  Pre-flight OK — all port ranges, addresses and FQDNs valid.' Success
     }
-    Write-UILog $Log '  Pre-flight OK — all port ranges, addresses and FQDNs valid.' Success
 
     # ── Convert single-port ranges to API format ─────────────────────────────────
     # CS FW API convention: {start=N, end=0} for a single port; {start=N, end=M} for ranges.
@@ -1099,6 +1128,9 @@ function Start-Migration {
     Write-UILog $Log "  Rule Group ID : $groupId" Info
     Write-UILog $Log "  Policy ID     : $policyId" Info
     Write-UILog $Log "  CS rules created : $($CsRules.Count)" Info
+    if ($skippedRules.Count -gt 0) {
+        Write-UILog $Log "  Rules skipped    : $($skippedRules.Count)  (see report below)" Warning
+    }
     Write-UILog $Log '' Info
     Write-UILog $Log 'NEXT STEPS:' Warning
     Write-UILog $Log '  1. In Falcon console -> Endpoint security -> Firewall -> Policies' Info
@@ -1106,6 +1138,27 @@ function Start-Migration {
     Write-UILog $Log '  3. Validate in Monitor Mode before switching to Enforce.' Info
     if ($MonitorMode) {
         Write-UILog $Log '  4. The policy is in MONITOR MODE  -  all traffic is allowed, blocks are logged.' Warning
+    }
+
+    # ── Skipped-rules CSV report ──────────────────────────────────────────────────
+    if ($skippedRules.Count -gt 0) {
+        $reportPath = $script:LogFile -replace '\.log$', '-skipped-rules.csv'
+        try {
+            $skippedRules | ForEach-Object {
+                [PSCustomObject]@{
+                    CsRuleName  = $_.CsRuleName
+                    SepRuleName = $_.SepRuleName
+                    ErrorType   = $_.ErrorType
+                    ErrorDetail = $_.ErrorDetail
+                    Hint        = $_.Hint
+                }
+            } | Export-Csv -Path $reportPath -NoTypeInformation -Encoding UTF8
+            Write-UILog $Log '' Info
+            Write-UILog $Log "Skipped-rules report saved:" Warning
+            Write-UILog $Log "  $reportPath" Info
+        } catch {
+            Write-UILog $Log "Could not write skipped-rules report: $_" Error
+        }
     }
 
     return @{ groupId = $groupId; policyId = $policyId }
