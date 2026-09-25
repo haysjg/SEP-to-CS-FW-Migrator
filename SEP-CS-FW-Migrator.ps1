@@ -928,8 +928,7 @@ function Start-Migration {
 
     # ── Pre-flight port + address validation ─────────────────────────────────────
     Write-FileLog "--- Pre-flight dump ($($CsRules.Count) rules) ---" INFO
-    $goodRules = [System.Collections.Generic.List[hashtable]]::new()
-    $skipCount = 0
+    $preflightErrors = [System.Collections.Generic.List[string]]::new()
     foreach ($r in $CsRules) {
         $lp  = if ($r.local_port  -and @($r.local_port).Count  -gt 0) { ($r.local_port  | ForEach-Object { "$($_.start)-$($_.end)" }) -join ',' } else { 'any' }
         $rp  = if ($r.remote_port -and @($r.remote_port).Count -gt 0) { ($r.remote_port | ForEach-Object { "$($_.start)-$($_.end)" }) -join ',' } else { 'any' }
@@ -940,38 +939,29 @@ function Start-Migration {
         $portCheck = Test-RulePortsValid $r
         if (-not $portCheck.valid) {
             $msg = "Port conflict in '$($r.name)' ($($portCheck.field)): $($portCheck.issue)"
-            Write-FileLog "  SKIP — $msg" ERROR
-            Write-UILog $Log "  Skip: $msg" Warning
-            $skipCount++
-            continue
+            Write-FileLog "  ERROR — $msg" ERROR
+            $preflightErrors.Add($msg)
         }
 
         $addrCheck = Test-RuleAddressesValid $r
         if (-not $addrCheck.valid) {
-            # Strip protocol/FQDN suffixes to recover the original SEP rule name for the hint
             $sepName = $r.name -replace '\s*\[(?:TCP|UDP|ICMP|ESP|ANY|\d+|FQDN:[^\]]+)\]\s*$', '' -replace '\.\.\.$', ''
             $msg  = "Bad address in '$($r.name)' ($($addrCheck.field)): '$($addrCheck.address)' — $($addrCheck.reason)"
-            $hint = "-> In your SEP JSON, search for rule name '$($sepName.Trim())' and inspect its hosts[] entries."
-            Write-FileLog "  SKIP — $msg" ERROR
+            $hint = "-> Search for rule '$($sepName.Trim())' in your SEP JSON and inspect its hosts[] entries."
+            Write-FileLog "  ERROR — $msg" ERROR
             Write-FileLog "  $hint" ERROR
-            Write-UILog $Log "  Skip: $msg" Warning
-            Write-UILog $Log "  $hint" Warning
-            $skipCount++
-            continue
+            $preflightErrors.Add("$msg`n     $hint")
         }
-
-        $goodRules.Add($r)
     }
-    if ($skipCount -gt 0) {
-        Write-UILog $Log "  $skipCount rule(s) skipped (port conflicts). $($goodRules.Count) proceeding." Warning
-        $CsRules = $goodRules.ToArray()
-        if ($CsRules.Count -eq 0) {
-            Write-UILog $Log 'No valid rules remaining after port validation.' Error
-            return $null
+    if ($preflightErrors.Count -gt 0) {
+        Write-UILog $Log "  Pre-flight FAILED — $($preflightErrors.Count) error(s):" Error
+        foreach ($e in $preflightErrors) {
+            Write-UILog $Log "  x $e" Error
         }
-    } else {
-        Write-UILog $Log '  Pre-flight OK — all port ranges and addresses valid.' Success
+        Write-UILog $Log "  Fix the above in your SEP JSON and re-run Analysis + Migration." Warning
+        return $null
     }
+    Write-UILog $Log '  Pre-flight OK — all port ranges and addresses valid.' Success
 
     # ── Convert single-port ranges to API format ─────────────────────────────────
     # CS FW API convention: {start=N, end=0} for a single port; {start=N, end=M} for ranges.
