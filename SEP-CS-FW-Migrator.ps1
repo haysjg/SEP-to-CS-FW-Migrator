@@ -925,15 +925,16 @@ function Start-Migration {
     }
 
     # ── Convert single-port ranges to API format ─────────────────────────────────
-    # CS FW API uses {start=N, end=N} for a single port and {start=N, end=M} for ranges.
-    # end=0 is rejected as "Port number is 0"; port 0 entries are already filtered upstream.
+    # CS FW API convention: {start=N, end=0} for a single port; {start=N, end=M} for ranges.
+    # {start=N, end=N} is rejected ("Duplicate ports listed in range").
+    # Port 0 entries are already filtered in Get-ConnectionPorts so end=0 is safe here.
     Write-FileLog "--- Converting ports to API format ---" INFO
     foreach ($r in $CsRules) {
         foreach ($field in @('local_port', 'remote_port')) {
             if ($r[$field] -and @($r[$field]).Count -gt 0) {
                 $r[$field] = @(@($r[$field]) | ForEach-Object {
                     $s = [int]$_.start; $e = [int]$_.end
-                    @{ start = $s; end = $e }
+                    if ($s -eq $e) { @{ start = $s; end = 0 } } else { @{ start = $s; end = $e } }
                 })
             }
         }
