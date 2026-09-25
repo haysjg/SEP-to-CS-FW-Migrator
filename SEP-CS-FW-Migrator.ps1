@@ -33,6 +33,8 @@ function Write-FileLog {
     Add-Content -Path $script:LogFile -Value $line -Encoding UTF8
 }
 
+$script:MaxRuleNameLen = 64
+
 $script:DirectionMap = @{ 0 = 'OUT'; 1 = 'IN'; 2 = 'BOTH' }
 $script:DirectionLabel = @{ 0 = 'Outbound'; 1 = 'Inbound'; 2 = 'Both' }
 
@@ -699,7 +701,7 @@ function Convert-SepRuleToCs {
         foreach ($fqdn in $remoteFqdns) {
             $fqdnSuffix = if ($remoteFqdns.Count -gt 1 -or $remoteIpAddrs.Count -gt 0) { " [FQDN:$fqdn]" } else { '' }
             $rule = Build-CsRule `
-                -Name        "$($SepRule.name)$protoSuffix$fqdnSuffix" `
+                -Name        (Limit-RuleName $SepRule.name "$protoSuffix$fqdnSuffix") `
                 -Description $description `
                 -Enabled     ([bool]$SepRule.rulestate.enabled) `
                 -Action      $csAction `
@@ -726,7 +728,7 @@ function Convert-SepRuleToCs {
 
         if ($remoteAddr) {
             $rule = Build-CsRule `
-                -Name        "$($SepRule.name)$protoSuffix" `
+                -Name        (Limit-RuleName $SepRule.name $protoSuffix) `
                 -Description $description `
                 -Enabled     ([bool]$SepRule.rulestate.enabled) `
                 -Action      $csAction `
@@ -743,6 +745,15 @@ function Convert-SepRuleToCs {
     }
 
     return , $csRules.ToArray()
+}
+
+function Limit-RuleName {
+    param([string]$Base, [string]$Suffix = '')
+    $full = "$Base$Suffix"
+    if ($full.Length -le $script:MaxRuleNameLen) { return $full }
+    $available = $script:MaxRuleNameLen - $Suffix.Length - 3
+    if ($available -lt 1) { return $Suffix.Substring(0, [Math]::Min($script:MaxRuleNameLen, $Suffix.Length)) }
+    return "$($Base.Substring(0, $available))...$Suffix"
 }
 
 function Build-CsRule {
