@@ -357,6 +357,7 @@ function Get-ConnectionPorts {
     foreach ($c in $Connections) {
         foreach ($p in ($c.ports | Where-Object { $_ })) {
             $start = [int]$p.start
+            if ($start -eq 0) { continue }  # SEP uses port 0 as "any port" — no constraint in CS
             $end   = if ($null -ne $p.end) { [int]$p.end } else { $start }
             if ($end -lt $start) { $end = $start }
             if ($p.location -eq 'LOCAL') { $local.Add(@{ start = $start; end = $end }) }
@@ -924,16 +925,15 @@ function Start-Migration {
     }
 
     # ── Convert single-port ranges to API format ─────────────────────────────────
-    # CS FW API convention: {start=N, end=0} for a single port (end=0 = "no upper bound").
-    # Using {start=N, end=N} causes "Duplicate ports listed in range" because the API
-    # treats both start and end as listed port values and sees N twice.
+    # CS FW API uses {start=N, end=N} for a single port and {start=N, end=M} for ranges.
+    # end=0 is rejected as "Port number is 0"; port 0 entries are already filtered upstream.
     Write-FileLog "--- Converting ports to API format ---" INFO
     foreach ($r in $CsRules) {
         foreach ($field in @('local_port', 'remote_port')) {
             if ($r[$field] -and @($r[$field]).Count -gt 0) {
                 $r[$field] = @(@($r[$field]) | ForEach-Object {
                     $s = [int]$_.start; $e = [int]$_.end
-                    if ($s -eq $e) { @{ start = $s; end = 0 } } else { @{ start = $s; end = $e } }
+                    @{ start = $s; end = $e }
                 })
             }
         }
