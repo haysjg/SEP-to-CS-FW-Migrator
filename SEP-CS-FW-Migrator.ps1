@@ -377,16 +377,17 @@ function Test-RuleFqdnValid {
     if (-not $Rule.fqdn_enabled -or [string]::IsNullOrEmpty($Rule.fqdn)) {
         return @{ valid = $true; fqdn = ''; reason = '' }
     }
-    $fqdn = $Rule.fqdn
-    # Wildcard-only is valid; otherwise each label must be [a-zA-Z0-9*] with interior hyphens/digits only
-    if ($fqdn -eq '*') { return @{ valid = $true; fqdn = $fqdn; reason = '' } }
     $labelOk = '^[a-zA-Z0-9*]([a-zA-Z0-9\-*]*[a-zA-Z0-9*])?$'
-    foreach ($label in ($fqdn -split '\.')) {
-        if ([string]::IsNullOrEmpty($label) -or $label -notmatch $labelOk) {
-            return @{ valid = $false; fqdn = $fqdn; reason = "label '$label' contains invalid characters (underscores and special chars are not allowed)" }
+    foreach ($singleFqdn in ($Rule.fqdn -split ';')) {
+        $singleFqdn = $singleFqdn.Trim()
+        if ($singleFqdn -eq '*') { continue }
+        foreach ($label in ($singleFqdn -split '\.')) {
+            if ([string]::IsNullOrEmpty($label) -or $label -notmatch $labelOk) {
+                return @{ valid = $false; fqdn = $Rule.fqdn; reason = "label '$label' in '$singleFqdn' contains invalid characters (underscores and special chars are not allowed)" }
+            }
         }
     }
-    return @{ valid = $true; fqdn = $fqdn; reason = '' }
+    return @{ valid = $true; fqdn = $Rule.fqdn; reason = '' }
 }
 
 function Get-ConnectionPorts {
@@ -734,11 +735,11 @@ function Convert-SepRuleToCs {
         $csProto   = if ($proto -eq 0) { '' } elseif ($script:ProtocolMap.ContainsKey($proto)) { $script:ProtocolMap[$proto] } else { "$proto" }
         $protoSuffix = if ($protos.Count -gt 1) { " [$csProto]" } else { '' }
 
-        # FQDN sub-rules (one per FQDN  -  CS FW supports one FQDN per rule)
-        foreach ($fqdn in $remoteFqdns) {
-            $fqdnSuffix = if ($remoteFqdns.Count -gt 1 -or $remoteIpAddrs.Count -gt 0) { " [FQDN:$fqdn]" } else { '' }
+        # Single FQDN rule — CS FW supports multiple FQDNs separated by ";"
+        if ($remoteFqdns.Count -gt 0) {
+            $joinedFqdn = $remoteFqdns -join ';'
             $rule = Build-CsRule `
-                -Name        (Limit-RuleName $SepRule.name "$protoSuffix$fqdnSuffix") `
+                -Name        (Limit-RuleName $SepRule.name $protoSuffix) `
                 -Description $description `
                 -Enabled     ([bool]$SepRule.rulestate.enabled) `
                 -Action      $csAction `
@@ -746,7 +747,7 @@ function Convert-SepRuleToCs {
                 -Protocol    $csProto `
                 -LocalAddr   $localAddrs.ToArray() `
                 -RemoteAddr  @(@{ address = '*'; netmask = 0 }) `
-                -Fqdn        $fqdn `
+                -Fqdn        $joinedFqdn `
                 -LocalPort   $ports.local `
                 -RemotePort  $ports.remote `
                 -ImageName   $imageName `
@@ -893,7 +894,7 @@ function Write-ExpansionSummary {
         }
 
         $csCount   = $r.csRules.Count
-        $fqdns     = @($r.csRules | Where-Object { $_.fqdn_enabled } | ForEach-Object { $_.fqdn } | Sort-Object -Unique)
+        $fqdns     = @($r.csRules | Where-Object { $_.fqdn_enabled } | ForEach-Object { $_.fqdn -split ';' } | Sort-Object -Unique)
         $protos    = @($r.csRules | ForEach-Object { $_.protocol } | Sort-Object -Unique)
         $ipRules   = @($r.csRules | Where-Object { -not $_.fqdn_enabled }).Count
 
@@ -956,7 +957,7 @@ function Start-Migration {
         Write-FileLog "  '$($r.name)' proto=$($r.protocol) dir=$($r.direction) local_addr=[$la] remote_addr=[$ra] local_port=[$lp] remote_port=[$rp]" INFO
 
         $ruleErrors = [System.Collections.Generic.List[hashtable]]::new()
-        $sepName    = $r.name -replace '\s*\[(?:TCP|UDP|ICMP|ESP|ANY|\d+|FQDN:[^\]]+)\]\s*$', '' -replace '\.\.\.$', ''
+        $sepName    = $r.name -replace '\s*\[(?:TCP|UDP|ICMP|ESP|ANY|\d+)\]\s*$', '' -replace '\.\.\.$', ''
         $sepName    = $sepName.Trim()
 
         $portCheck = Test-RulePortsValid $r
