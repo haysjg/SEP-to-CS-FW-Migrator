@@ -615,9 +615,9 @@ function Get-RuleClassification {
         if ($app.name -and $app.name -ne '*') {
             $path = $app.name
             if ($path -notmatch '[/\\]') {
-                $adaptations.Add("Application path is filename-only ('$path') -> converted to glob pattern **\\$path")
+                $adaptations.Add("Application path is filename-only ('$path') -> converted to \Device\HarddiskVolume?\$path")
             } elseif ($path -match '^[A-Za-z]:\\') {
-                $adaptations.Add("Application path has drive letter ('$path') -> CS FW glob paths use ** prefix (no drive letter)")
+                $adaptations.Add("Application path has drive letter ('$path') -> converted to \Device\HarddiskVolume? prefix (no drive letter)")
             }
         }
     }
@@ -701,6 +701,8 @@ function Convert-SepRuleToCs {
             $p = $p -replace '^[A-Za-z]:\\', '**\'
             # Filename only -> prepend glob
             if ($p -notmatch '[/\\]') { $p = "**\$p" }
+            # Replace leading ** with \Device\HarddiskVolume? (CS FW Windows path format)
+            $p = $p -replace '^\*\*', '\Device\HarddiskVolume?'
             $imageName = $p
             break
         }
