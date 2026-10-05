@@ -692,8 +692,8 @@ function Convert-SepRuleToCs {
     # Default: any local
     $localAddrs.Add(@{ address = '*'; netmask = 0 })
 
-    # ── Application path ─────────────────────────────────────────────────────────
-    $imageName = ''
+    # ── Application paths ────────────────────────────────────────────────────────
+    $imageNames = [System.Collections.Generic.List[string]]::new()
     foreach ($app in $apps) {
         if ($app.name -and $app.name -ne '*') {
             $p = $app.name
@@ -703,8 +703,7 @@ function Convert-SepRuleToCs {
             if ($p -notmatch '[/\\]') { $p = "**\$p" }
             # Replace leading ** with \Device\HarddiskVolume? (CS FW Windows path format)
             $p = $p -replace '^\*\*', '\Device\HarddiskVolume?'
-            $imageName = $p
-            break
+            if (-not $imageNames.Contains($p)) { $imageNames.Add($p) }
         }
     }
 
@@ -732,55 +731,60 @@ function Convert-SepRuleToCs {
     # ── Protocol list ─────────────────────────────────────────────────────────────
     if ($protos.Count -eq 0) { $protos = @(0) }  # 0 = ANY
 
-    # ── Create one CS rule per protocol (and per FQDN if multiple) ───────────────
+    # ── Create one CS rule per protocol × per application path ───────────────────
+    $effectiveImageNames = if ($imageNames.Count -gt 0) { $imageNames.ToArray() } else { @('') }
     foreach ($proto in $protos) {
-        $csProto   = if ($proto -eq 0) { '' } elseif ($script:ProtocolMap.ContainsKey($proto)) { $script:ProtocolMap[$proto] } else { "$proto" }
+        $csProto     = if ($proto -eq 0) { '' } elseif ($script:ProtocolMap.ContainsKey($proto)) { $script:ProtocolMap[$proto] } else { "$proto" }
         $protoSuffix = if ($protos.Count -gt 1) { " [$csProto]" } else { '' }
 
-        # Single FQDN rule — CS FW supports multiple FQDNs separated by ";"
-        if ($remoteFqdns.Count -gt 0) {
-            $joinedFqdn = $remoteFqdns -join ';'
-            $rule = Build-CsRule `
-                -Name        (Limit-RuleName $SepRule.name $protoSuffix) `
-                -Description $description `
-                -Enabled     ([bool]$SepRule.rulestate.enabled) `
-                -Action      $csAction `
-                -Direction   'OUT'  `
-                -Protocol    $csProto `
-                -LocalAddr   $localAddrs.ToArray() `
-                -RemoteAddr  @(@{ address = '*'; netmask = 0 }) `
-                -Fqdn        $joinedFqdn `
-                -LocalPort   $ports.local `
-                -RemotePort  $ports.remote `
-                -ImageName   $imageName `
-                -NetLocIds   $netLocIds
-            $csRules.Add($rule)
-        }
+        foreach ($imageName in $effectiveImageNames) {
+            $appSuffix = if ($effectiveImageNames.Count -gt 1) { " [App:$(($imageName -split '\\')[-1])]" } else { '' }
 
-        # IP/CIDR sub-rules
-        $remoteAddr = if ($remoteIpAddrs.Count -gt 0) {
-            $remoteIpAddrs.ToArray()
-        } elseif ($remoteFqdns.Count -eq 0) {
-            @(@{ address = '*'; netmask = 0 })
-        } else {
-            $null
-        }
+            # Single FQDN rule — CS FW supports multiple FQDNs separated by ";"
+            if ($remoteFqdns.Count -gt 0) {
+                $joinedFqdn = $remoteFqdns -join ';'
+                $rule = Build-CsRule `
+                    -Name        (Limit-RuleName $SepRule.name "$protoSuffix$appSuffix") `
+                    -Description $description `
+                    -Enabled     ([bool]$SepRule.rulestate.enabled) `
+                    -Action      $csAction `
+                    -Direction   'OUT'  `
+                    -Protocol    $csProto `
+                    -LocalAddr   $localAddrs.ToArray() `
+                    -RemoteAddr  @(@{ address = '*'; netmask = 0 }) `
+                    -Fqdn        $joinedFqdn `
+                    -LocalPort   $ports.local `
+                    -RemotePort  $ports.remote `
+                    -ImageName   $imageName `
+                    -NetLocIds   $netLocIds
+                $csRules.Add($rule)
+            }
 
-        if ($remoteAddr) {
-            $rule = Build-CsRule `
-                -Name        (Limit-RuleName $SepRule.name $protoSuffix) `
-                -Description $description `
-                -Enabled     ([bool]$SepRule.rulestate.enabled) `
-                -Action      $csAction `
-                -Direction   $csDir `
-                -Protocol    $csProto `
-                -LocalAddr   $localAddrs.ToArray() `
-                -RemoteAddr  $remoteAddr `
-                -LocalPort   $ports.local `
-                -RemotePort  $ports.remote `
-                -ImageName   $imageName `
-                -NetLocIds   $netLocIds
-            $csRules.Add($rule)
+            # IP/CIDR sub-rules
+            $remoteAddr = if ($remoteIpAddrs.Count -gt 0) {
+                $remoteIpAddrs.ToArray()
+            } elseif ($remoteFqdns.Count -eq 0) {
+                @(@{ address = '*'; netmask = 0 })
+            } else {
+                $null
+            }
+
+            if ($remoteAddr) {
+                $rule = Build-CsRule `
+                    -Name        (Limit-RuleName $SepRule.name "$protoSuffix$appSuffix") `
+                    -Description $description `
+                    -Enabled     ([bool]$SepRule.rulestate.enabled) `
+                    -Action      $csAction `
+                    -Direction   $csDir `
+                    -Protocol    $csProto `
+                    -LocalAddr   $localAddrs.ToArray() `
+                    -RemoteAddr  $remoteAddr `
+                    -LocalPort   $ports.local `
+                    -RemotePort  $ports.remote `
+                    -ImageName   $imageName `
+                    -NetLocIds   $netLocIds
+                $csRules.Add($rule)
+            }
         }
     }
 
