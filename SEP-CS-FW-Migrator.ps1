@@ -577,13 +577,17 @@ function Get-RuleClassification {
     $protos    = Get-ConnectionProtocols $conns
     $hasFqdn   = $false
     $hasRange  = $false
-    $groupNames = [System.Collections.Generic.List[string]]::new()
+    $groupNames      = [System.Collections.Generic.List[string]]::new()
+    $emptyGroupNames = [System.Collections.Generic.List[string]]::new()
 
     foreach ($h in $hosts) {
         $resolved = Resolve-HostEntry $h
         foreach ($r in $resolved) {
-            if ($r.type -eq 'fqdn')             { $hasFqdn = $true }
-            if ($r.type -eq 'range')            { $hasRange = $true }
+            if ($r.type -eq 'fqdn')              { $hasFqdn = $true }
+            if ($r.type -eq 'range')             { $hasRange = $true }
+            if ($r.type -eq 'group_placeholder' -and $r.groupName -and -not $emptyGroupNames.Contains($r.groupName)) {
+                $emptyGroupNames.Add($r.groupName)
+            }
             if ($r.groupName -and -not $groupNames.Contains($r.groupName)) {
                 $groupNames.Add($r.groupName)
             }
@@ -601,7 +605,13 @@ function Get-RuleClassification {
     }
 
     if ($groupNames.Count -gt 0) {
-        $adaptations.Add("Host group(s): [$($groupNames -join ', ')]  -  group members embedded in JSON and will be expanded inline")
+        $inlineGroups = @($groupNames | Where-Object { -not $emptyGroupNames.Contains($_) })
+        if ($inlineGroups.Count -gt 0) {
+            $adaptations.Add("Host group(s): [$($inlineGroups -join ', ')] — group members embedded in JSON and will be expanded inline")
+        }
+        if ($emptyGroupNames.Count -gt 0) {
+            $adaptations.Add("Host group(s) with no inline members in SEP export: [$($emptyGroupNames -join ', ')] — treated as 'any host' (*); verify group members manually")
+        }
     }
 
     foreach ($a in $adapters) {
@@ -725,6 +735,9 @@ function Convert-SepRuleToCs {
     if ($Classification.adaptations.Count -gt 0) {
         $descParts += "[Migrated with adaptations: $($Classification.adaptations -join ' | ')]"
     }
+    if ($ports.local.Count -gt 0 -and $csDir -eq 'OUT') {
+        $descParts += "[Note: local port constraint dropped — outbound source port is ephemeral in CS FW]"
+    }
     $description = ($descParts -join '  -  ')
     if ($description.Length -gt 500) { $description = $description.Substring(0, 497) + '...' }
 
@@ -738,7 +751,8 @@ function Convert-SepRuleToCs {
         $protoSuffix = if ($protos.Count -gt 1) { " [$csProto]" } else { '' }
 
         foreach ($imageName in $effectiveImageNames) {
-            $appSuffix = if ($effectiveImageNames.Count -gt 1) { " [App:$(($imageName -split '\\')[-1])]" } else { '' }
+            $appIdx    = [array]::IndexOf($effectiveImageNames, $imageName)
+            $appSuffix = if ($effectiveImageNames.Count -gt 1) { " [App:$($appIdx + 1)]" } else { '' }
 
             # Single FQDN rule — CS FW supports multiple FQDNs separated by ";"
             if ($remoteFqdns.Count -gt 0) {
@@ -994,15 +1008,35 @@ function Start-Migration {
             })
         }
 
+        if ($r.address_family -eq 'IP6') {
+            $ipv4Pat  = '^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}'
+            $ipv4Bad  = @($r.remote_address | Where-Object { $_ -and $_.address -ne '*' -and $_.address -match $ipv4Pat })
+            if ($ipv4Bad.Count -gt 0) {
+                $ruleErrors.Add(@{
+                    Type   = 'Address Family Mismatch'
+                    Detail = "Protocol requires IPv6 but remote hosts contain IPv4 address(es): $(($ipv4Bad | ForEach-Object { $_.address }) -join ', ')"
+                    Hint   = "Rule '$sepName': ICMPv6/IPv6-encap rules cannot target IPv4 addresses — fix host entries in SEP."
+                })
+            }
+        }
+
+        if ($r.fqdn_enabled -and -not [string]::IsNullOrEmpty($r.fqdn)) {
+            $fqdnCount = @($r.fqdn -split ';').Count
+            if ($fqdnCount -gt 10) {
+                Write-FileLog "  WARNING: '$($r.name)' has $fqdnCount FQDNs in one rule — CS FW limit unknown; verify after migration" WARN
+                Write-UILog $Log "  [Warning] '$($r.name)': $fqdnCount FQDNs in a single rule — CS FW limit unknown; verify after migration" Warning
+            }
+        }
+
         if ($ruleErrors.Count -gt 0) {
             foreach ($e in $ruleErrors) {
                 Write-FileLog "  SKIP ($($e.Type)) — $($e.Detail)" ERROR
                 $skippedRules.Add(@{
-                    CsRuleName = $r.name
+                    CsRuleName  = $r.name
                     SepRuleName = $sepName
-                    ErrorType  = $e.Type
+                    ErrorType   = $e.Type
                     ErrorDetail = $e.Detail
-                    Hint       = $e.Hint
+                    Hint        = $e.Hint
                 })
             }
         } else {
