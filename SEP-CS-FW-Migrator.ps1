@@ -505,12 +505,12 @@ function Resolve-HostEntry {
     # dns_domain (FQDN / wildcard)
     if ($Entry.dns_domain -and $Entry.dns_domain -ne '') {
         # Strip URL path component — CS FW only supports hostname/wildcard, not paths
-        $fqdnVal = ($Entry.dns_domain -split '/')[0].Trim().ToLower()
+        $fqdnVal = ($Entry.dns_domain -split '/')[0].Trim().ToLowerInvariant()
         if ($fqdnVal -ne '') { $results.Add(@{ type = 'fqdn'; value = $fqdnVal; groupName = $groupName }) }
     }
     # dns_host (single hostname -> treat as FQDN)
     if ($Entry.dns_host -and $Entry.dns_host -ne '') {
-        $fqdnVal = ($Entry.dns_host -split '/')[0].Trim().ToLower()
+        $fqdnVal = ($Entry.dns_host -split '/')[0].Trim().ToLowerInvariant()
         if ($fqdnVal -ne '') { $results.Add(@{ type = 'fqdn'; value = $fqdnVal; groupName = $groupName }) }
     }
     # group_only entry (group reference with no actual data)
@@ -742,9 +742,10 @@ function Convert-SepRuleToCs {
 
             # Single FQDN rule — CS FW supports multiple FQDNs separated by ";"
             if ($remoteFqdns.Count -gt 0) {
-                $joinedFqdn = $remoteFqdns -join ';'
+                $joinedFqdn    = ($remoteFqdns -join ';').ToLowerInvariant()
+                $fqdnNameSuffix = if ($remoteIpAddrs.Count -gt 0) { ' [FQDN]' } else { '' }
                 $rule = Build-CsRule `
-                    -Name        (Limit-RuleName $SepRule.name "$protoSuffix$appSuffix") `
+                    -Name        (Limit-RuleName $SepRule.name "$protoSuffix$appSuffix$fqdnNameSuffix") `
                     -Description $description `
                     -Enabled     ([bool]$SepRule.rulestate.enabled) `
                     -Action      $csAction `
