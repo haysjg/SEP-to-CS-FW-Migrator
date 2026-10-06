@@ -494,9 +494,18 @@ function Resolve-HostEntry {
             groupName = $groupName
         })
     }
-    # subnet (CIDR)
+    # subnet (CIDR string)
     if ($Entry.subnet -and $Entry.subnet -ne '') {
         $results.Add(@{ type = 'cidr'; value = $Entry.subnet; groupName = $groupName })
+    }
+    # ipv4_subnet (object with ip + mask — SEP group member format)
+    if ($Entry.ipv4_subnet -and $Entry.ipv4_subnet.ip) {
+        $bits = 0
+        foreach ($octet in ($Entry.ipv4_subnet.mask -split '\.')) {
+            $val = [int]$octet
+            while ($val -gt 0) { if ($val -band 1) { $bits++ }; $val = $val -shr 1 }
+        }
+        $results.Add(@{ type = 'cidr'; value = "$($Entry.ipv4_subnet.ip)/$bits"; groupName = $groupName })
     }
     # single IP
     if ($Entry.ip -and $Entry.ip -ne '') {
